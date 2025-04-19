@@ -17,4 +17,6 @@ class MainActivity : AppCompatActivity() {
         val result = Parser(resources).parseDocx(inputStream)
         Displayer(this).display(result, container)
     }
+
+
 }

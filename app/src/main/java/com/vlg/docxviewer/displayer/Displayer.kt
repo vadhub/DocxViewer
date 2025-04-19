@@ -2,6 +2,7 @@ package com.vlg.docxviewer.displayer
 
 import android.content.Context
 import android.graphics.BitmapFactory
+import android.graphics.Paint
 import android.graphics.Typeface
 import android.util.TypedValue
 import android.view.Gravity
@@ -49,6 +50,9 @@ class Displayer(private val context: Context) {
             style.isBold -> Typeface.BOLD
             style.isItalic -> Typeface.ITALIC
             else -> Typeface.NORMAL
+        }
+        if (style.isUnderscore) {
+            paintFlags = Paint.UNDERLINE_TEXT_FLAG
         }
         setTypeface(null, typeface)
 

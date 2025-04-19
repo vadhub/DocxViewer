@@ -282,11 +282,9 @@ class Parser(private val resources: Resources) {
                         style = style.copy(fontSize = halfPointsToSp(halfPoints))
                     }
 
-                    "b" -> {
-                        style = style.copy(isBold = true)
-                    }
-
+                    "b" -> style = style.copy(isBold = true)
                     "i" -> style = style.copy(isItalic = true)
+                    "u" -> style = style.copy(isUnderscore = true)
                 }
             }
             eventType = parser.next()
