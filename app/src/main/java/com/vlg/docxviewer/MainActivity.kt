@@ -84,8 +84,8 @@ class MainActivity : AppCompatActivity() {
         val rowspan: Int = 1
     )
 
-    data class TableRowDocx(val cells: List<TableCell>)
-    data class DocxTable(val rows: List<TableRowDocx>)
+    data class TableRowDocx(val cells: MutableList<TableCell>)
+    data class DocxTable(val rows: MutableList<TableRowDocx>)
 
     data class ParseResult(
         val elements: MutableList<DocxElement>,
@@ -232,23 +232,24 @@ class MainActivity : AppCompatActivity() {
         val drawingNS = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
         var imageId = ""
         var previousNumId = -1
-        var currentTable: MutableList<TableRowDocx>? = null
-        var currentRow: MutableList<TableCell>? = null
-        var currentCell: MutableList<DocxElement>? = null
-        var currentElement = mutableListOf<DocxElement>()
+        var currentTable: DocxTable? = null
+        var currentRow: TableRowDocx? = null
+        var currentCell: TableCell? = null
+        var cellElements = mutableListOf<DocxElement>()
 
         while (eventType != XmlPullParser.END_DOCUMENT) {
             when (eventType) {
                 XmlPullParser.START_TAG -> when (parser.namespace) {
                     wordNS -> {
                         when (parser.name) {
-                            "tbl" -> currentTable = mutableListOf()
-                            "tr" -> currentRow = mutableListOf()
+                            "tbl" -> currentTable = DocxTable(mutableListOf())
+                            "tr" -> currentRow = TableRowDocx(mutableListOf())
                             "tc" -> {
-                                currentCell = mutableListOf()
-                                val colspan =
-                                    parser.getAttributeValue(null, "gridSpan")?.toInt() ?: 1
-                                // ... аналогично для rowspan ...
+                                cellElements = mutableListOf()
+                                // Парсим атрибуты ячейки
+                                val colspan = parser.getAttributeValue(wordNS, "gridSpan")?.toIntOrNull() ?: 1
+                                val rowspan = if (parser.getAttributeValue(wordNS, "vMerge") == "restart") 1 else 0
+                                currentCell = TableCell(mutableListOf(), colspan, rowspan)
                             }
 
                             "rPr" -> currentTextStyle = parseRunProperties(parser)
@@ -276,35 +277,37 @@ class MainActivity : AppCompatActivity() {
 
                 XmlPullParser.END_TAG -> when (parser.namespace) {
                     wordNS -> when (parser.name) {
-
                         "tbl" -> {
                             currentTable?.let {
-                                result.elements.add(
-                                    DocxElement(
-                                        ElementType.TABLE,
-                                        table = DocxTable(it)
-                                    )
-                                )
+                                result.elements.add(DocxElement(ElementType.TABLE, table = it))
                                 currentTable = null
                             }
                         }
-
                         "tr" -> {
                             currentRow?.let {
-                                currentTable?.add(TableRowDocx(it))
+                                currentTable?.rows?.add(it)
                                 currentRow = null
                             }
                         }
-
                         "tc" -> {
                             currentCell?.let {
-                                currentRow?.add(TableCell(it))
+                                currentRow?.cells?.add(it.copy(content = cellElements))
                                 currentCell = null
+                                cellElements = mutableListOf()
                             }
                         }
 
                         "p" -> {
-                            if (currentListLevel != -1 && currentNumId != -1) {
+                            if (currentCell != null) {
+                                val text = currentParagraphText.toString().trim()
+                                if (text.isNotEmpty()) {
+                                    cellElements.add(DocxElement(
+                                        ElementType.TEXT,
+                                        text = text,
+                                        textStyle = currentTextStyle
+                                    ))
+                                }
+                            } else if (currentListLevel != -1 && currentNumId != -1) {
                                 if (previousNumId != currentNumId) {
                                     result.listCounters.resetUpperLevels(
                                         previousNumId,
@@ -420,7 +423,11 @@ class MainActivity : AppCompatActivity() {
             ).apply {
                 setMargins(16.dp(), 8.dp(), 16.dp(), 8.dp())
             }
+            setBackgroundResource(R.drawable.cell_border)
         }
+
+        // Рассчитываем ширину столбцов
+        val columnWeights = calculateColumnWeights(table)
 
         table.rows.forEach { row ->
             val tableRow = TableRow(this).apply {
@@ -430,25 +437,39 @@ class MainActivity : AppCompatActivity() {
                 )
             }
 
-            row.cells.forEach { cell ->
+            row.cells.forEachIndexed { index, cell ->
                 val cellLayout = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
-                    layoutParams = TableRow.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    layoutParams = TableRow.LayoutParams(
+                        0,
+                        TableRow.LayoutParams.WRAP_CONTENT,
+                        columnWeights.getOrElse(index) { 1f }
+                    ).apply {
                         marginEnd = 2.dp()
                         bottomMargin = 2.dp()
-                        gravity = Gravity.CENTER
+                        gravity = Gravity.CENTER_VERTICAL
                     }
-                    setBackgroundResource(R.drawable.table_cell_border)
+                    setPadding(8.dp(), 8.dp(), 8.dp(), 8.dp())
+                    setBackgroundResource(R.drawable.cell_border)
                 }
 
                 cell.content.forEach { element ->
                     when (element.type) {
                         ElementType.TEXT -> addTextView(cellLayout, element.text, element.textStyle)
                         ElementType.IMAGE -> element.imageData?.let { addImageView(cellLayout, it) }
-                        ElementType.LIST_ITEM -> {}
+                        ElementType.LIST_ITEM -> addListItem(
+                            cellLayout,
+                            element
+                        )
                         ElementType.NEWLINE -> addSpace(cellLayout)
-                        ElementType.TABLE -> {}
+                        else -> {}
                     }
+                }
+
+                // Обработка объединенных ячеек
+                if (cell.colspan > 1 || cell.rowspan > 1) {
+                    val params = cellLayout.layoutParams as TableRow.LayoutParams
+                    params.span = cell.colspan
                 }
 
                 tableRow.addView(cellLayout)
@@ -457,6 +478,21 @@ class MainActivity : AppCompatActivity() {
         }
         container.addView(tableLayout)
     }
+
+    private fun calculateColumnWeights(table: DocxTable): List<Float> {
+        val maxColumns = table.rows.maxOfOrNull { it.cells.size } ?: 0
+        val columnWeights = MutableList(maxColumns) { 0f }
+
+        table.rows.forEach { row ->
+            row.cells.forEachIndexed { index, cell ->
+                val weight = cell.colspan.toFloat() / row.cells.sumOf { it.colspan.toDouble() }
+                columnWeights[index] = columnWeights[index].coerceAtLeast(weight.toFloat())
+            }
+        }
+
+        return columnWeights
+    }
+
 
     private fun addImageView(container: LinearLayout, data: ByteArray) {
         ImageView(this).apply {
@@ -475,10 +511,10 @@ class MainActivity : AppCompatActivity() {
     private fun addListItem(
         container: LinearLayout,
         element: DocxElement,
-        listDefinitions: Map<Int, Map<Int, ListStyle>>,
-        counters: ListCounters
+        listDefinitions: Map<Int, Map<Int, ListStyle>> = mutableMapOf(),
+        counters: ListCounters = ListCounters()
     ) {
-        val markerText = getListMarker(element, listDefinitions, counters)
+        val markerText = if (listDefinitions.isNotEmpty()) getListMarker(element, listDefinitions, counters) else getDefaultListMarker()
 
         LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -523,6 +559,8 @@ class MainActivity : AppCompatActivity() {
             container.addView(this)
         }
     }
+
+    private fun getDefaultListMarker() = "•"
 
     private fun getListMarker(
         element: DocxElement,
