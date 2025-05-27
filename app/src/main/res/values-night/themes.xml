@@ -2,6 +2,10 @@
     <!-- Base application theme. -->
     <style name="Base.Theme.DocxViewer" parent="Theme.Material3.DayNight.NoActionBar">
         <!-- Customize your dark theme here. -->
-        <!-- <item name="colorPrimary">@color/my_dark_primary</item> -->
+         <item name="colorPrimary">@color/black</item>
+    </style>
+
+    <style name="progress">
+        <item name="mk_color">@color/white</item>
     </style>
 </resources>
