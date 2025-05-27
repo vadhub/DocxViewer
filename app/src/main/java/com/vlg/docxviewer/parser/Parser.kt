@@ -95,6 +95,7 @@ class Parser(private val resources: Resources) {
         val images = mutableMapOf<String, ByteArray>()
         var xmlContent = ""
         var numberingXml = ""
+        var relsXml = ""
 
         try {
             while (true) {
@@ -105,6 +106,9 @@ class Parser(private val resources: Resources) {
 
                     entry.name == "word/numbering.xml" ->
                         numberingXml = zip.readBytes().toString(Charsets.UTF_8)
+
+                    entry.name == "word/_rels/document.xml.rels" ->
+                        relsXml = zip.readBytes().toString(Charsets.UTF_8)
 
                     entry.name.startsWith("word/media/") -> {
                         val name = entry.name.substringAfterLast("/")
@@ -117,17 +121,41 @@ class Parser(private val resources: Resources) {
         } finally {
             zip.close()
         }
-
+        val imageRelationships = parseDocumentRels(relsXml)
         val listDefinitions = parseNumberingXml(numberingXml)
         val parseResult = ParseResult(elements, listDefinitions)
-        parseDocumentXml(xmlContent, parseResult, images)
+        parseDocumentXml(xmlContent, parseResult, images, imageRelationships)
         return parseResult
+    }
+
+    private fun parseDocumentRels(xml: String): Map<String, String> {
+        val relationships = mutableMapOf<String, String>()
+        if (xml.isEmpty()) return relationships
+
+        val parser = Xml.newPullParser().apply {
+            setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, true)
+            setInput(StringReader(xml))
+        }
+
+        var eventType = parser.eventType
+        while (eventType != XmlPullParser.END_DOCUMENT) {
+            if (eventType == XmlPullParser.START_TAG && parser.name == "Relationship") {
+                val id = parser.getAttributeValue(null, "Id")
+                val target = parser.getAttributeValue(null, "Target")
+                if (id != null && target != null) {
+                    relationships[id] = target.substringAfter("media/")
+                }
+            }
+            eventType = parser.next()
+        }
+        return relationships
     }
 
     private fun parseDocumentXml(
         xml: String,
         result: ParseResult,
-        images: Map<String, ByteArray>
+        images: Map<String, ByteArray>,
+        imageRelationships: Map<String, String>
     ) {
         val parser = Xml.newPullParser().apply {
             setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, true)
@@ -141,8 +169,11 @@ class Parser(private val resources: Resources) {
         var insideNumPr = false
         var currentTextStyle = TextStyle()
         val wordNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        val drawingNS2 = "http://schemas.openxmlformats.org/drawingml/2006/main"
         val drawingNS = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+        val relationshipsNS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
         var imageId = ""
+        var imageRelId = ""
         var previousNumId = -1
         var currentTable: DocxTable? = null
         var currentRow: TableRowDocx? = null
@@ -159,8 +190,13 @@ class Parser(private val resources: Resources) {
                             "tc" -> {
                                 cellElements = mutableListOf()
                                 // Парсим атрибуты ячейки
-                                val colspan = parser.getAttributeValue(wordNS, "gridSpan")?.toIntOrNull() ?: 1
-                                val rowspan = if (parser.getAttributeValue(wordNS, "vMerge") == "restart") 1 else 0
+                                val colspan =
+                                    parser.getAttributeValue(wordNS, "gridSpan")?.toIntOrNull() ?: 1
+                                val rowspan = if (parser.getAttributeValue(
+                                        wordNS,
+                                        "vMerge"
+                                    ) == "restart"
+                                ) 1 else 0
                                 currentCell = TableCell(mutableListOf(), colspan, rowspan)
                             }
 
@@ -181,9 +217,18 @@ class Parser(private val resources: Resources) {
                         }
                     }
 
-                    drawingNS -> if (parser.name == "docPr") {
-                        imageId = parser.getAttributeValue(null, "id") ?: ""
+                    drawingNS -> {
+                        if (parser.name == "docPr") {
+                            imageId = parser.getAttributeValue(null, "id") ?: ""
+                        }
                     }
+
+                    drawingNS2 -> {
+                        if (parser.name == "blip") {
+                            imageRelId = parser.getAttributeValue(relationshipsNS, "embed") ?: ""
+                        }
+                    }
+
 
                 }
 
@@ -195,12 +240,14 @@ class Parser(private val resources: Resources) {
                                 currentTable = null
                             }
                         }
+
                         "tr" -> {
                             currentRow?.let {
                                 currentTable?.rows?.add(it)
                                 currentRow = null
                             }
                         }
+
                         "tc" -> {
                             currentCell?.let {
                                 currentRow?.cells?.add(it.copy(content = cellElements))
@@ -254,11 +301,35 @@ class Parser(private val resources: Resources) {
                             currentNumId = -1
                         }
 
-                        "r" -> if (imageId.isNotEmpty()) {
-                            images["image$imageId.png"]?.let {
-                                result.elements.add(DocxElement(ElementType.IMAGE, imageData = it))
+                        "r" -> {
+                            if (imageId.isNotEmpty()) {
+                                images["image$imageId.png"]?.let {
+                                    result.elements.add(
+                                        DocxElement(
+                                            ElementType.IMAGE,
+                                            imageData = it
+                                        )
+                                    )
+                                }
+                                imageId = ""
                             }
-                            imageId = ""
+
+                            if (imageRelId.isNotEmpty()) {
+                                val imageName = imageRelationships[imageRelId]
+                                Log.d("!!!", imageRelId.toString())
+                                Log.d("!!!", imageName.toString())
+                                imageName?.let { name ->
+                                    images[name]?.let { data ->
+                                        result.elements.add(
+                                            DocxElement(
+                                                ElementType.IMAGE,
+                                                imageData = data
+                                            )
+                                        )
+                                    }
+                                }
+                                imageRelId = ""
+                            }
                         }
 
                         "numPr" -> insideNumPr = false

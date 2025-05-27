@@ -30,7 +30,7 @@ class DocumentsFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
-        intent.setType("application/pdf")
+        intent.setType("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         startActivityForResult(intent, REQUEST_CODE_OPEN_DIRECTORY)
     }
 
